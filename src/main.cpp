@@ -16,6 +16,9 @@
 #define LCD_HEIGHT 48
 #define LCD_PAGES  6   // 48 rows / 8 pixels per page
 
+// ======== Framebuffer ========
+static uint8_t lcdBuffer[LCD_PAGES][LCD_WIDTH];
+
 // ======== Pin configuration (change to match your wiring) ========
 #ifndef LCD_PIN_CS
 #define LCD_PIN_CS   10
@@ -109,8 +112,161 @@ static void lcdDrawInterleavedVerticalLines(uint8_t totalCols = LCD_WIDTH, bool 
   }
 }
 
-// Forward declaration so we can label the ruler before the function is defined
+// Forward declarations
 static void lcdDrawNumber(uint8_t page, uint8_t col, int num);
+
+// ======== Framebuffer operations ========
+
+// Clear framebuffer
+static void lcdClearBuffer() {
+  memset(lcdBuffer, 0x00, sizeof(lcdBuffer));
+}
+
+// Fill framebuffer with pattern
+static void lcdFillBuffer(uint8_t pattern = 0xFF) {
+  memset(lcdBuffer, pattern, sizeof(lcdBuffer));
+}
+
+// Flush framebuffer to LCD
+static void lcdFlush() {
+  for (uint8_t page = 0; page < LCD_PAGES; ++page) {
+    lcdSetPage(page);
+    lcdSetColumn(0);
+    lcdWriteDataBuffer(lcdBuffer[page], LCD_WIDTH);
+  }
+}
+
+// ======== Primitive graphics functions (framebuffer-based) ========
+
+// Set a single pixel at (x, y) in framebuffer
+static void lcdSetPixel(uint8_t x, uint8_t y, bool on = true) {
+  if (x >= LCD_WIDTH || y >= LCD_HEIGHT) return;
+  uint8_t page = y / 8;
+  uint8_t bit = y % 8;
+  
+  if (on) {
+    lcdBuffer[page][x] |= (1 << bit);
+  } else {
+    lcdBuffer[page][x] &= ~(1 << bit);
+  }
+}
+
+// Get pixel state
+static bool lcdGetPixel(uint8_t x, uint8_t y) {
+  if (x >= LCD_WIDTH || y >= LCD_HEIGHT) return false;
+  uint8_t page = y / 8;
+  uint8_t bit = y % 8;
+  return (lcdBuffer[page][x] & (1 << bit)) != 0;
+}
+
+// Draw a horizontal line
+static void lcdDrawHLine(uint8_t x0, uint8_t x1, uint8_t y) {
+  if (y >= LCD_HEIGHT) return;
+  if (x0 > x1) { uint8_t tmp = x0; x0 = x1; x1 = tmp; }
+  if (x0 >= LCD_WIDTH) return;
+  if (x1 >= LCD_WIDTH) x1 = LCD_WIDTH - 1;
+  
+  for (uint8_t x = x0; x <= x1; ++x) {
+    lcdSetPixel(x, y);
+  }
+}
+
+// Draw a vertical line
+static void lcdDrawVLine(uint8_t x, uint8_t y0, uint8_t y1) {
+  if (x >= LCD_WIDTH) return;
+  if (y0 > y1) { uint8_t tmp = y0; y0 = y1; y1 = tmp; }
+  if (y0 >= LCD_HEIGHT) return;
+  if (y1 >= LCD_HEIGHT) y1 = LCD_HEIGHT - 1;
+  
+  for (uint8_t y = y0; y <= y1; ++y) {
+    lcdSetPixel(x, y);
+  }
+}
+
+// Draw a line using Bresenham's algorithm
+static void lcdDrawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
+  int16_t dx = abs(x1 - x0);
+  int16_t dy = abs(y1 - y0);
+  int16_t sx = x0 < x1 ? 1 : -1;
+  int16_t sy = y0 < y1 ? 1 : -1;
+  int16_t err = dx - dy;
+  
+  while (true) {
+    if (x0 >= 0 && x0 < LCD_WIDTH && y0 >= 0 && y0 < LCD_HEIGHT) {
+      lcdSetPixel(x0, y0);
+    }
+    
+    if (x0 == x1 && y0 == y1) break;
+    
+    int16_t e2 = 2 * err;
+    if (e2 > -dy) {
+      err -= dy;
+      x0 += sx;
+    }
+    if (e2 < dx) {
+      err += dx;
+      y0 += sy;
+    }
+  }
+}
+
+// Draw a rectangle outline
+static void lcdDrawRect(uint8_t x, uint8_t y, uint8_t w, uint8_t h) {
+  if (w == 0 || h == 0) return;
+  lcdDrawHLine(x, x + w - 1, y);           // top
+  lcdDrawHLine(x, x + w - 1, y + h - 1);   // bottom
+  lcdDrawVLine(x, y, y + h - 1);           // left
+  lcdDrawVLine(x + w - 1, y, y + h - 1);   // right
+}
+
+// Draw a filled rectangle
+static void lcdFillRect(uint8_t x, uint8_t y, uint8_t w, uint8_t h) {
+  if (x >= LCD_WIDTH || y >= LCD_HEIGHT) return;
+  
+  uint8_t x1 = (x + w > LCD_WIDTH) ? LCD_WIDTH - 1 : x + w - 1;
+  uint8_t y1 = (y + h > LCD_HEIGHT) ? LCD_HEIGHT - 1 : y + h - 1;
+  
+  for (uint8_t cy = y; cy <= y1; ++cy) {
+    for (uint8_t cx = x; cx <= x1; ++cx) {
+      lcdSetPixel(cx, cy);
+    }
+  }
+}
+
+// Draw a circle using midpoint algorithm
+static void lcdDrawCircle(int16_t x0, int16_t y0, uint8_t r) {
+  int16_t x = r;
+  int16_t y = 0;
+  int16_t err = 0;
+  
+  while (x >= y) {
+    if (x0 + x >= 0 && x0 + x < LCD_WIDTH && y0 + y >= 0 && y0 + y < LCD_HEIGHT)
+      lcdSetPixel(x0 + x, y0 + y);
+    if (x0 + y >= 0 && x0 + y < LCD_WIDTH && y0 + x >= 0 && y0 + x < LCD_HEIGHT)
+      lcdSetPixel(x0 + y, y0 + x);
+    if (x0 - y >= 0 && x0 - y < LCD_WIDTH && y0 + x >= 0 && y0 + x < LCD_HEIGHT)
+      lcdSetPixel(x0 - y, y0 + x);
+    if (x0 - x >= 0 && x0 - x < LCD_WIDTH && y0 + y >= 0 && y0 + y < LCD_HEIGHT)
+      lcdSetPixel(x0 - x, y0 + y);
+    if (x0 - x >= 0 && x0 - x < LCD_WIDTH && y0 - y >= 0 && y0 - y < LCD_HEIGHT)
+      lcdSetPixel(x0 - x, y0 - y);
+    if (x0 - y >= 0 && x0 - y < LCD_WIDTH && y0 - x >= 0 && y0 - x < LCD_HEIGHT)
+      lcdSetPixel(x0 - y, y0 - x);
+    if (x0 + y >= 0 && x0 + y < LCD_WIDTH && y0 - x >= 0 && y0 - x < LCD_HEIGHT)
+      lcdSetPixel(x0 + y, y0 - x);
+    if (x0 + x >= 0 && x0 + x < LCD_WIDTH && y0 - y >= 0 && y0 - y < LCD_HEIGHT)
+      lcdSetPixel(x0 + x, y0 - y);
+    
+    if (err <= 0) {
+      y++;
+      err += 2 * y + 1;
+    }
+    if (err > 0) {
+      x--;
+      err -= 2 * x + 1;
+    }
+  }
+}
 
 // Draw a column ruler: small tick every 2 cols, bigger every 8 cols, labels every 16 cols.
 // Marks visible window [0 .. visibleCols-1] with full-height borders.
@@ -188,11 +344,18 @@ static void lcdDrawChar(uint8_t page, uint8_t col, char c, uint8_t spacing = 1) 
   uint8_t g[5];
   glyph5x8(c, g);
   if (col + 5 > LCD_WIDTH) return; // Evitar overflow
-  lcdSetPage(page);
-  lcdSetColumn(col);
-  lcdWriteDataBuffer(g, 5);
-  // inter-char spacing columns (blank)
-  for (uint8_t i = 0; i < spacing && (col + 5 + i) < LCD_WIDTH; ++i) lcdWriteData(0x00);
+  
+  // Desenhar no framebuffer
+  for (uint8_t i = 0; i < 5; ++i) {
+    if (col + i < LCD_WIDTH) {
+      lcdBuffer[page][col + i] = g[i];
+    }
+  }
+  
+  // Espaçamento (colunas em branco)
+  for (uint8_t i = 0; i < spacing && (col + 5 + i) < LCD_WIDTH; ++i) {
+    lcdBuffer[page][col + 5 + i] = 0x00;
+  }
 }
 
 static void lcdDrawText(uint8_t page, uint8_t col, const char* text) {
@@ -325,36 +488,46 @@ void setup() {
   // setCpuFrequencyMhz(80);
   lcdInit();
 
-  // Limpar toda a RAM do display
-  for (uint8_t page = 0; page < 8; ++page) {
-    lcdSetPage(page);
-    lcdSetColumn(0);
-    for (uint8_t i = 0; i < LCD_WIDTH; ++i) lcdWriteData(0x00);
+  // Limpar framebuffer
+  lcdClearBuffer();
+  
+  // Teste de gráficos: demonstração de primitivas usando framebuffer
+  
+  // 1. Retângulo externo (borda do display)
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+  
+  // 2. Linhas diagonais nos cantos
+  lcdDrawLine(0, 0, 20, 10);      // Superior esquerdo
+  lcdDrawLine(LCD_WIDTH-1, 0, LCD_WIDTH-21, 10);  // Superior direito
+  lcdDrawLine(0, LCD_HEIGHT-1, 20, LCD_HEIGHT-11);  // Inferior esquerdo
+  lcdDrawLine(LCD_WIDTH-1, LCD_HEIGHT-1, LCD_WIDTH-21, LCD_HEIGHT-11);  // Inferior direito
+  
+  // 3. Círculos
+  lcdDrawCircle(66, 24, 20);      // Círculo central grande
+  lcdDrawCircle(30, 15, 10);      // Círculo pequeno esquerda
+  lcdDrawCircle(102, 15, 10);     // Círculo pequeno direita
+  
+  // 4. Retângulos internos
+  lcdDrawRect(10, 10, 30, 15);    // Retângulo pequeno esquerdo
+  lcdFillRect(92, 30, 30, 10);    // Retângulo preenchido direito
+  
+  // 5. Linhas horizontais e verticais
+  lcdDrawHLine(5, LCD_WIDTH-6, LCD_HEIGHT/2);  // Linha horizontal central
+  lcdDrawVLine(LCD_WIDTH/2, 5, LCD_HEIGHT-6);  // Linha vertical central
+  
+  // 6. Padrão de linhas
+  for (uint8_t i = 0; i < 5; ++i) {
+    lcdDrawLine(50 + i*3, 35, 70 + i*3, 45);
   }
-
-  // Demo: desenhar bordas do display (colunas 0 e 131, linhas 0 e 47)
-  // Colunas esquerda e direita
-  for (uint8_t page = 0; page < LCD_PAGES; ++page) {
-    lcdSetPage(page);
-    lcdSetColumn(0);
-    lcdWriteData(0xFF); // coluna 0 (esquerda)
-    lcdSetColumn(LCD_WIDTH - 1);
-    lcdWriteData(0xFF); // coluna 131 (direita)
-  }
-
-  // Linha superior (linha 0 = página 0, bit 0)
-  lcdSetPage(0);
-  lcdSetColumn(0);
-  for (uint8_t col = 0; col < LCD_WIDTH; ++col) {
-    lcdWriteData(0x01); // bit 0
-  }
-
-  // Linha inferior (linha 47 = página 5, bit 7)
-  lcdSetPage(LCD_PAGES - 1);
-  lcdSetColumn(0);
-  for (uint8_t col = 0; col < LCD_WIDTH; ++col) {
-    lcdWriteData(0x80); // bit 7
-  }
+  
+  // 7. Texto
+  lcdDrawText(0, 40, "LCD");
+  lcdDrawNumber(5, 100, 132);
+  
+  // Flush: transferir framebuffer para LCD
+  lcdFlush();
+  
+  delay(100); // Tempo para estabilizar
 }
 
 void loop() {
