@@ -2,7 +2,15 @@
 
 Firmware para controlar o display LCD usando comunicação SPI bit-bang (software) baseado na engenharia reversa do protocolo original.
 
-## 📌 Configuração de Pinos
+## � Especificações do Display
+
+- **Resolução:** 132 × 48 pixels (confirmado por testes)
+- **Páginas:** 6 páginas de 8 pixels de altura
+- **Área visível:** Colunas 0-131, Linhas 0-47
+- **Controlador:** Similar a UC1701/ST7565 (page-addressable)
+- **Interface:** SPI-like, write-only
+
+## �📌 Configuração de Pinos
 
 Por padrão, o código usa os seguintes GPIOs do ESP32-S3:
 
@@ -75,29 +83,39 @@ Essa é a sequência mínima e confirmada que inicializa o display corretamente.
 ### Comandos de Endereçamento
 
 ```cpp
-lcdSetPage(0-7);        // Seleciona página (linha vertical de 8 pixels)
-lcdSetColumn(0-127);    // Seleciona coluna horizontal
+lcdSetPage(0-5);        // Seleciona página (0-5 para 48 linhas)
+lcdSetColumn(0-131);    // Seleciona coluna horizontal (0-131 para 132 colunas)
+```
+
+### Constantes Disponíveis
+
+```cpp
+LCD_WIDTH  = 132   // Largura total em pixels
+LCD_HEIGHT = 48    // Altura total em pixels
+LCD_PAGES  = 6     // Número de páginas (48 / 8)
 ```
 
 ## 📝 Fonte e Caracteres
 
 O código inclui uma fonte 5x8 pixels com os seguintes caracteres:
 
-- **'A'**: `{0xF8, 0x24, 0x22, 0x24, 0xF8}`
-- **'F'**: `{0xFE, 0x12, 0x12, 0x12, 0x02}`
-- **'-'**: `{0x80, 0x80, 0x80, 0x80, 0x80}`
-- **':'**: `{0x08, 0x08, 0x08, 0x08, 0x08}`
-- **' '** (espaço): `{0x00, 0x00, 0x00, 0x00, 0x00}`
+- **Letras**: 'A', 'F'
+- **Dígitos**: '0'-'9' (completo)
+- **Símbolos**: '-', ':', ' ' (espaço)
 
 Caracteres desconhecidos são renderizados como um box (▢).
 
 ### Adicionar Texto
 
 ```cpp
-lcdDrawText(0, 0, "A A A F");   // Página 0, coluna 0
-lcdDrawText(1, 10, "-:-:-:");   // Página 1, coluna 10
+lcdDrawText(0, 0, "12:34");     // Página 0, coluna 0
+lcdDrawNumber(1, 10, 2025);     // Desenha número na página 1, coluna 10
 lcdDrawChar(2, 50, 'A');        // Caractere único
 ```
+
+### Limites de Renderização
+
+O código automaticamente limita a escrita à área visível (0-131 colunas, 0-5 páginas) para evitar overflow.
 
 ## 🐛 Troubleshooting
 

@@ -5,8 +5,16 @@
 // - RST: active low
 // - Data (MOSI) sampled on SCK rising edge, MSB first
 // - Display uses 5x8 font, vertical columns per byte
+//
+// Display resolution: 132 columns × 48 rows (6 pages × 8 pixels)
+// Visible area: columns 0-131, rows 0-47
 
 #include <Arduino.h>
+
+// ======== Display resolution ========
+#define LCD_WIDTH  132
+#define LCD_HEIGHT 48
+#define LCD_PAGES  6   // 48 rows / 8 pixels per page
 
 // ======== Pin configuration (change to match your wiring) ========
 #ifndef LCD_PIN_CS
@@ -90,8 +98,8 @@ static void lcdSetColumn(uint8_t col) {           // col: 0..127
 
 // Draw alternating vertical lines across the display (column stripes)
 // Useful to count available visible columns. totalCols can be 128 or 132.
-static void lcdDrawInterleavedVerticalLines(uint8_t totalCols = 132, bool evenOn = true) {
-  for (uint8_t page = 0; page < 8; ++page) {
+static void lcdDrawInterleavedVerticalLines(uint8_t totalCols = LCD_WIDTH, bool evenOn = true) {
+  for (uint8_t page = 0; page < LCD_PAGES; ++page) {
     lcdSetPage(page);
     lcdSetColumn(0);
     for (uint8_t col = 0; col < totalCols; ++col) {
@@ -106,9 +114,9 @@ static void lcdDrawNumber(uint8_t page, uint8_t col, int num);
 
 // Draw a column ruler: small tick every 2 cols, bigger every 8 cols, labels every 16 cols.
 // Marks visible window [0 .. visibleCols-1] with full-height borders.
-static void lcdDrawColumnRuler(uint8_t totalCols = 132, uint8_t visibleCols = 128, uint8_t labelStep = 16) {
+static void lcdDrawColumnRuler(uint8_t totalCols = LCD_WIDTH, uint8_t visibleCols = LCD_WIDTH, uint8_t labelStep = 16) {
   // Clear all pages first
-  for (uint8_t page = 0; page < 8; ++page) {
+  for (uint8_t page = 0; page < LCD_PAGES; ++page) {
     lcdSetPage(page);
     lcdSetColumn(0);
     for (uint8_t i = 0; i < totalCols; ++i) lcdWriteData(0x00);
@@ -134,7 +142,7 @@ static void lcdDrawColumnRuler(uint8_t totalCols = 132, uint8_t visibleCols = 12
   if (visibleCols > 0 && visibleCols <= totalCols) {
     uint8_t left = 0;
     uint8_t right = visibleCols - 1;
-    for (uint8_t page = 0; page < 8; ++page) {
+    for (uint8_t page = 0; page < LCD_PAGES; ++page) {
       lcdSetPage(page);
       lcdSetColumn(left);
       lcdWriteData(0xFF);
@@ -179,16 +187,17 @@ static bool glyph5x8(char c, uint8_t out[5]) {
 static void lcdDrawChar(uint8_t page, uint8_t col, char c, uint8_t spacing = 1) {
   uint8_t g[5];
   glyph5x8(c, g);
+  if (col + 5 > LCD_WIDTH) return; // Evitar overflow
   lcdSetPage(page);
   lcdSetColumn(col);
   lcdWriteDataBuffer(g, 5);
   // inter-char spacing columns (blank)
-  for (uint8_t i = 0; i < spacing; ++i) lcdWriteData(0x00);
+  for (uint8_t i = 0; i < spacing && (col + 5 + i) < LCD_WIDTH; ++i) lcdWriteData(0x00);
 }
 
 static void lcdDrawText(uint8_t page, uint8_t col, const char* text) {
   uint8_t x = col;
-  for (const char* p = text; *p; ++p) {
+  for (const char* p = text; *p && x < LCD_WIDTH; ++p) {
     lcdDrawChar(page, x, *p);
     x += 6; // 5 columns + 1 spacing
   }
@@ -300,14 +309,14 @@ static void lcdInit() {
   for (uint8_t page = 0; page < 4; ++page) {
     lcdSetPage(page);
     lcdSetColumn(0);
-    for (uint8_t i = 0; i < 132; ++i) lcdWriteData(0x00);
+    for (uint8_t i = 0; i < LCD_WIDTH; ++i) lcdWriteData(0x00);
   }
   
   // Extra: clear pages 4-7 as well (total 8 pages)
   for (uint8_t page = 4; page < 8; ++page) {
     lcdSetPage(page);
     lcdSetColumn(0);
-    for (uint8_t i = 0; i < 132; ++i) lcdWriteData(0x00);
+    for (uint8_t i = 0; i < LCD_WIDTH; ++i) lcdWriteData(0x00);
   }
 }
 
@@ -316,26 +325,35 @@ void setup() {
   // setCpuFrequencyMhz(80);
   lcdInit();
 
-  // Limpar toda a RAM do display (8 páginas x 132 colunas)
+  // Limpar toda a RAM do display
   for (uint8_t page = 0; page < 8; ++page) {
     lcdSetPage(page);
     lcdSetColumn(0);
-    for (uint8_t i = 0; i < 132; ++i) lcdWriteData(0x00);
+    for (uint8_t i = 0; i < LCD_WIDTH; ++i) lcdWriteData(0x00);
   }
 
-  // Teste: acender apenas linha 0 (topo) e linha 47 (base) - verificar altura disponível
-  // Linha 0 = página 0, bit 0 (0x01)
+  // Demo: desenhar bordas do display (colunas 0 e 131, linhas 0 e 47)
+  // Colunas esquerda e direita
+  for (uint8_t page = 0; page < LCD_PAGES; ++page) {
+    lcdSetPage(page);
+    lcdSetColumn(0);
+    lcdWriteData(0xFF); // coluna 0 (esquerda)
+    lcdSetColumn(LCD_WIDTH - 1);
+    lcdWriteData(0xFF); // coluna 131 (direita)
+  }
+
+  // Linha superior (linha 0 = página 0, bit 0)
   lcdSetPage(0);
   lcdSetColumn(0);
-  for (uint8_t col = 0; col < 132; ++col) {
-    lcdWriteData(0x01); // bit 0 = linha 0
+  for (uint8_t col = 0; col < LCD_WIDTH; ++col) {
+    lcdWriteData(0x01); // bit 0
   }
 
-  // Linha 47 = página 5, bit 7 (0x80)
-  lcdSetPage(5);
+  // Linha inferior (linha 47 = página 5, bit 7)
+  lcdSetPage(LCD_PAGES - 1);
   lcdSetColumn(0);
-  for (uint8_t col = 0; col < 132; ++col) {
-    lcdWriteData(0x80); // bit 7 = linha 47 (última linha da página 5)
+  for (uint8_t col = 0; col < LCD_WIDTH; ++col) {
+    lcdWriteData(0x80); // bit 7
   }
 }
 
@@ -346,9 +364,9 @@ void loop() {
 // Desenha uma régua horizontal de linhas (para contar a altura visível)
 // visibleRows: número de linhas a marcar (ex.: 48)
 // Marcas: a cada 2 linhas (curta), a cada 8 linhas (média), a cada 16 linhas (maior)
-static void lcdDrawRowRuler(uint8_t totalCols = 132, uint8_t visibleRows = 48, uint8_t labelStep = 16) {
+static void lcdDrawRowRuler(uint8_t totalCols = LCD_WIDTH, uint8_t visibleRows = LCD_HEIGHT, uint8_t labelStep = 16) {
   // Limpa tudo
-  for (uint8_t page = 0; page < 8; ++page) {
+  for (uint8_t page = 0; page < LCD_PAGES; ++page) {
     lcdSetPage(page);
     lcdSetColumn(0);
     for (uint8_t i = 0; i < totalCols; ++i) lcdWriteData(0x00);
@@ -356,7 +374,7 @@ static void lcdDrawRowRuler(uint8_t totalCols = 132, uint8_t visibleRows = 48, u
 
   // Construir marcas por página nos primeiros 5-6 pixels de coluna
   uint8_t lastPage = (visibleRows + 7) / 8; // páginas realmente visíveis
-  for (uint8_t page = 0; page < lastPage; ++page) {
+  for (uint8_t page = 0; page < lastPage && page < LCD_PAGES; ++page) {
     uint8_t c0 = 0, c1 = 0, c2 = 0, c3 = 0, c4 = 0; // 5 colunas de ticks
     for (uint8_t bit = 0; bit < 8; ++bit) {
       uint8_t y = page * 8 + bit;
