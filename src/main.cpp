@@ -35,6 +35,14 @@ static uint8_t lcdBuffer[LCD_PAGES][LCD_WIDTH];
 #ifndef LCD_PIN_MOSI
 #define LCD_PIN_MOSI 14
 #endif
+#ifndef LCD_PIN_BACKLIGHT
+#define LCD_PIN_BACKLIGHT 15  // PWM para controle de brilho
+#endif
+
+// PWM config para backlight
+#define LCD_BACKLIGHT_CHANNEL 0
+#define LCD_BACKLIGHT_FREQ    5000  // 5 kHz
+#define LCD_BACKLIGHT_RESOLUTION 8  // 8 bits (0-255)
 
 // Small delay to control bit-bang speed (microseconds)
 static inline void tickDelay() {
@@ -114,8 +122,24 @@ static void lcdDrawInterleavedVerticalLines(uint8_t totalCols = LCD_WIDTH, bool 
 
 // Forward declarations
 static void lcdDrawNumber(uint8_t page, uint8_t col, int num);
+static void demoTextScrollBitmap();
+static void demoGraphicsPrimitives();
 
 // ======== Framebuffer operations ========
+
+// Set backlight brightness (0-255, invertido: 0=mais brilhante, 255=apagado)
+static void lcdSetBacklight(uint8_t brightness) {
+  ledcWrite(LCD_BACKLIGHT_CHANNEL, 255 - brightness); // Inverte para lógica LOW = ON
+}
+
+// Turn backlight on/off
+static void lcdBacklightOn() {
+  lcdSetBacklight(255); // Máximo brilho (PWM = 0 = LOW)
+}
+
+static void lcdBacklightOff() {
+  lcdSetBacklight(0); // Apagado (PWM = 255 = HIGH)
+}
 
 // Clear framebuffer
 static void lcdClearBuffer() {
@@ -428,6 +452,12 @@ static void lcdInit() {
   pinMode(LCD_PIN_RST, OUTPUT);
   pinMode(LCD_PIN_SCK, OUTPUT);
   pinMode(LCD_PIN_MOSI, OUTPUT);
+  pinMode(LCD_PIN_BACKLIGHT, OUTPUT);
+
+  // Configure PWM for backlight
+  ledcSetup(LCD_BACKLIGHT_CHANNEL, LCD_BACKLIGHT_FREQ, LCD_BACKLIGHT_RESOLUTION);
+  ledcAttachPin(LCD_PIN_BACKLIGHT, LCD_BACKLIGHT_CHANNEL);
+  lcdSetBacklight(255); // Ligar backlight no máximo
 
   // Idle levels - confirmed from scope capture
   // CS HIGH, RST HIGH, D/C LOW, SCK HIGH, MOSI HIGH
@@ -488,46 +518,198 @@ void setup() {
   // setCpuFrequencyMhz(80);
   lcdInit();
 
-  // Limpar framebuffer
+  // Teste simples: backlight constante e borda
+  lcdBacklightOn();
+  
+  lcdClearBuffer();
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+  lcdDrawText(1, 20, "ESP32-S3");
+  lcdDrawText(3, 30, "132x48");
+  lcdFlush();
+  
+  // Para testar a demo completa, descomente:
+  // demoTextScrollBitmap();
+  
+  // Para testar primitivas gráficas, descomente:
+  // demoGraphicsPrimitives();
+}
+
+// ======== Demo functions ========
+
+// Demo 1: Primitivas gráficas (salvo para referência)
+static void demoGraphicsPrimitives() {
   lcdClearBuffer();
   
-  // Teste de gráficos: demonstração de primitivas usando framebuffer
-  
-  // 1. Retângulo externo (borda do display)
+  // Retângulo externo
   lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
   
-  // 2. Linhas diagonais nos cantos
-  lcdDrawLine(0, 0, 20, 10);      // Superior esquerdo
-  lcdDrawLine(LCD_WIDTH-1, 0, LCD_WIDTH-21, 10);  // Superior direito
-  lcdDrawLine(0, LCD_HEIGHT-1, 20, LCD_HEIGHT-11);  // Inferior esquerdo
-  lcdDrawLine(LCD_WIDTH-1, LCD_HEIGHT-1, LCD_WIDTH-21, LCD_HEIGHT-11);  // Inferior direito
+  // Linhas diagonais nos cantos
+  lcdDrawLine(0, 0, 20, 10);
+  lcdDrawLine(LCD_WIDTH-1, 0, LCD_WIDTH-21, 10);
+  lcdDrawLine(0, LCD_HEIGHT-1, 20, LCD_HEIGHT-11);
+  lcdDrawLine(LCD_WIDTH-1, LCD_HEIGHT-1, LCD_WIDTH-21, LCD_HEIGHT-11);
   
-  // 3. Círculos
-  lcdDrawCircle(66, 24, 20);      // Círculo central grande
-  lcdDrawCircle(30, 15, 10);      // Círculo pequeno esquerda
-  lcdDrawCircle(102, 15, 10);     // Círculo pequeno direita
+  // Círculos
+  lcdDrawCircle(66, 24, 20);
+  lcdDrawCircle(30, 15, 10);
+  lcdDrawCircle(102, 15, 10);
   
-  // 4. Retângulos internos
-  lcdDrawRect(10, 10, 30, 15);    // Retângulo pequeno esquerdo
-  lcdFillRect(92, 30, 30, 10);    // Retângulo preenchido direito
+  // Retângulos
+  lcdDrawRect(10, 10, 30, 15);
+  lcdFillRect(92, 30, 30, 10);
   
-  // 5. Linhas horizontais e verticais
-  lcdDrawHLine(5, LCD_WIDTH-6, LCD_HEIGHT/2);  // Linha horizontal central
-  lcdDrawVLine(LCD_WIDTH/2, 5, LCD_HEIGHT-6);  // Linha vertical central
+  // Linhas cruzadas
+  lcdDrawHLine(5, LCD_WIDTH-6, LCD_HEIGHT/2);
+  lcdDrawVLine(LCD_WIDTH/2, 5, LCD_HEIGHT-6);
   
-  // 6. Padrão de linhas
+  // Padrão
   for (uint8_t i = 0; i < 5; ++i) {
     lcdDrawLine(50 + i*3, 35, 70 + i*3, 45);
   }
   
-  // 7. Texto
   lcdDrawText(0, 40, "LCD");
   lcdDrawNumber(5, 100, 132);
   
-  // Flush: transferir framebuffer para LCD
+  lcdFlush();
+}
+
+// Bitmap de exemplo: smiley 16x16
+static const uint8_t PROGMEM smiley16x16[] = {
+  0x00, 0xE0, 0x18, 0x04, 0xC2, 0x22, 0x11, 0x11,
+  0x11, 0x11, 0x22, 0xC2, 0x04, 0x18, 0xE0, 0x00,
+  0x00, 0x07, 0x18, 0x20, 0x43, 0x44, 0x88, 0x88,
+  0x88, 0x88, 0x44, 0x43, 0x20, 0x18, 0x07, 0x00,
+};
+
+// Desenha bitmap (largura múltiplo de 8)
+static void lcdDrawBitmap(uint8_t x, uint8_t y, const uint8_t* bitmap, uint8_t w, uint8_t h) {
+  uint8_t pages = (h + 7) / 8;
+  for (uint8_t py = 0; py < pages; ++py) {
+    for (uint8_t px = 0; px < w; ++px) {
+      uint8_t col = pgm_read_byte(&bitmap[py * w + px]);
+      uint8_t destPage = (y / 8) + py;
+      uint8_t destX = x + px;
+      
+      if (destPage < LCD_PAGES && destX < LCD_WIDTH) {
+        uint8_t shift = y % 8;
+        if (shift == 0) {
+          lcdBuffer[destPage][destX] |= col;
+        } else {
+          lcdBuffer[destPage][destX] |= (col << shift);
+          if (destPage + 1 < LCD_PAGES) {
+            lcdBuffer[destPage + 1][destX] |= (col >> (8 - shift));
+          }
+        }
+      }
+    }
+  }
+}
+
+// Demo 2: Texto, scroll e bitmap
+static void demoTextScrollBitmap() {
+  // Fade in do backlight
+  for (uint8_t b = 0; b <= 255; b += 5) {
+    lcdSetBacklight(b);
+    delay(10);
+  }
+  
+  // Moldura inicial
+  lcdClearBuffer();
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+  lcdFlush();
+  delay(500);
+  
+  // Texto centralizado
+  lcdClearBuffer();
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+  lcdDrawText(1, 30, "ESP32-S3");
+  lcdDrawText(3, 35, "132x48");
+  lcdFlush();
+  delay(1500);
+  
+  // Scroll texto da direita para esquerda
+  const char* scrollText = "  Framebuffer Graphics Demo  ";
+  for (int16_t scroll = LCD_WIDTH; scroll > -150; scroll -= 2) {
+    lcdClearBuffer();
+    lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+    
+    int16_t textX = scroll;
+    for (const char* p = scrollText; *p; ++p) {
+      if (textX >= -6 && textX < LCD_WIDTH) {
+        lcdDrawChar(2, textX, *p, 1);
+      }
+      textX += 6;
+    }
+    
+    lcdFlush();
+    delay(30);
+  }
+  
+  delay(500);
+  
+  // Bitmaps piscando
+  for (uint8_t i = 0; i < 3; ++i) {
+    lcdClearBuffer();
+    lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+    
+    lcdDrawBitmap(10, 16, smiley16x16, 16, 16);
+    lcdDrawBitmap(58, 8, smiley16x16, 16, 16);
+    lcdDrawBitmap(106, 16, smiley16x16, 16, 16);
+    
+    lcdFlush();
+    delay(300);
+    
+    lcdClearBuffer();
+    lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+    lcdFlush();
+    delay(300);
+  }
+  
+  delay(500);
+  
+  // Padrão animado
+  for (int8_t frame = 0; frame < 20; ++frame) {
+    lcdClearBuffer();
+    
+    for (uint8_t y = 0; y < LCD_HEIGHT; y += 4) {
+      uint8_t lineY = (y + frame) % LCD_HEIGHT;
+      lcdDrawHLine(0, LCD_WIDTH-1, lineY);
+    }
+    
+    lcdDrawText(2, 20, "GRAPHICS");
+    lcdDrawNumber(3, 45, frame);
+    
+    lcdFlush();
+    delay(50);
+  }
+  
+  delay(500);
+  
+  // Tela final invertida
+  lcdClearBuffer();
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+  lcdFillRect(10, 10, LCD_WIDTH-20, LCD_HEIGHT-20);
+  
+  for (uint8_t page = 1; page < 5; ++page) {
+    for (uint8_t x = 20; x < LCD_WIDTH-20; ++x) {
+      lcdBuffer[page][x] ^= 0xFF;
+    }
+  }
+  
+  lcdDrawText(2, 40, "READY");
   lcdFlush();
   
-  delay(100); // Tempo para estabilizar
+  // Efeito de pulsação do backlight
+  for (uint8_t i = 0; i < 3; ++i) {
+    for (uint8_t b = 255; b > 100; b -= 5) {
+      lcdSetBacklight(b);
+      delay(10);
+    }
+    for (uint8_t b = 100; b <= 255; b += 5) {
+      lcdSetBacklight(b);
+      delay(10);
+    }
+  }
 }
 
 void loop() {
