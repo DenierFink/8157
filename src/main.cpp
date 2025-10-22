@@ -129,16 +129,17 @@ static void demoGraphicsPrimitives();
 
 // Set backlight brightness (0-255, invertido: 0=mais brilhante, 255=apagado)
 static void lcdSetBacklight(uint8_t brightness) {
-  ledcWrite(LCD_BACKLIGHT_CHANNEL, 255 - brightness); // Inverte para lógica LOW = ON
+  // Lógica normal: 0 = desligado (LOW), 255 = brilho máximo (HIGH)
+  ledcWrite(LCD_BACKLIGHT_CHANNEL, brightness);
 }
 
 // Turn backlight on/off
 static void lcdBacklightOn() {
-  lcdSetBacklight(255); // Máximo brilho (PWM = 0 = LOW)
+  lcdSetBacklight(255); // Máximo brilho
 }
 
 static void lcdBacklightOff() {
-  lcdSetBacklight(0); // Apagado (PWM = 255 = HIGH)
+  lcdSetBacklight(0); // Apagado
 }
 
 // Clear framebuffer
