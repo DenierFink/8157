@@ -620,19 +620,13 @@ static void lcdInit() {
 void setup() {
   Serial.begin(115200);
   Serial.println("\nESP32-S3 LCD 132x48 Driver");
-  Serial.println("Modo: Teclado mostra botao pressionado");
+  Serial.println("Modo: Jogo da Cobrinha");
   
   lcdInit();
   lcdBacklightOn();
   keypadInit();
   
-  // Tela inicial simples
-  lcdClearBuffer();
-  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
-  lcdDrawText(0, 8, "TECLADO", FONT_5X7);
-  lcdDrawText(2, 6, "Pressione um botao", FONT_3X5);
-  lcdDrawText(4, 10, "Aguardando...", FONT_3X5);
-  lcdFlush();
+  // Tela inicial será desenhada pelo jogo
 }
 
 // ======== Demo functions ========
@@ -813,37 +807,181 @@ static void demoTextScrollBitmap() {
   }
 }
 
-void loop() {
-  static Key lastShown = KEY_NONE;
-  Key k = readKeyDebounced();
+// ===================== Jogo da Cobrinha =====================
 
-  if (k != lastShown) {
-    const char* name = "NENHUM";
-    switch (k) {
-      case KEY_UP: name = "CIMA"; break;
-      case KEY_DOWN: name = "BAIXO"; break;
-      case KEY_LEFT: name = "ESQUERDA"; break;
-      case KEY_RIGHT: name = "DIREITA"; break;
-      case KEY_OK: name = "OK"; break;
-      default: name = "NENHUM"; break;
+struct Point { uint8_t x; uint8_t y; };
+
+// Grid do jogo: reservar 1 página (8 px) no topo para HUD (texto)
+static const uint8_t HUD_HEIGHT = 8;          // 1 página de fonte 5x7
+static const uint8_t CELL = 4;                // tamanho do tile em pixels (reduzido para aproveitar mais)
+static const uint8_t GRID_OFFSET_Y = HUD_HEIGHT;          // início da área jogável
+static const uint8_t GRID_ROWS = (LCD_HEIGHT - HUD_HEIGHT) / CELL; // 40/4=10 linhas
+static const uint8_t GRID_COLS = LCD_WIDTH / CELL;        // 132/4=33 colunas
+
+static const uint16_t SNAKE_MAX = GRID_COLS * GRID_ROWS;
+
+// Estado do jogo
+static Point snake[SNAKE_MAX];
+static uint16_t snakeLen = 0;
+static int8_t dirX = 1, dirY = 0;   // direção atual
+static int8_t nextDirX = 1, nextDirY = 0; // direção desejada pelas teclas
+static Point food = {0,0};
+static bool gameOver = false;
+static bool paused = false;
+static bool okHeld = false;
+static uint16_t score = 0;
+static unsigned long lastTick = 0;
+static uint16_t tickMs = 180; // velocidade base (ms por passo)
+
+static bool snakeOccupies(uint8_t x, uint8_t y) {
+  for (uint16_t i = 0; i < snakeLen; ++i) {
+    if (snake[i].x == x && snake[i].y == y) return true;
+  }
+  return false;
+}
+
+static void placeFood() {
+  for (int attempts = 0; attempts < 100; ++attempts) {
+    uint8_t fx = random(0, GRID_COLS);
+    uint8_t fy = random(0, GRID_ROWS);
+    if (!snakeOccupies(fx, fy)) { food = {fx, fy}; return; }
+  }
+  for (uint8_t y = 0; y < GRID_ROWS; ++y) {
+    for (uint8_t x = 0; x < GRID_COLS; ++x) {
+      if (!snakeOccupies(x, y)) { food = {x, y}; return; }
     }
+  }
+}
 
-    lcdClearBuffer();
-    lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
-    lcdDrawText(0, 8, "TECLADO", FONT_5X7);
-    lcdDrawText(2, 10, "Botao:", FONT_5X7);
-    // Mostrar nome do botao em destaque na linha abaixo
-    lcdDrawText(3, 10, name, FONT_5X7);
-    lcdFlush();
+static void snakeReset() {
+  randomSeed((uint32_t)micros());
+  snakeLen = 3;
+  uint8_t cx = GRID_COLS / 2;
+  uint8_t cy = GRID_ROWS / 2;
+  snake[0] = { (uint8_t)(cx+1), cy }; // cabeça
+  snake[1] = { cx, cy };
+  snake[2] = { (uint8_t)(cx-1), cy };
+  dirX = 1; dirY = 0;
+  nextDirX = 1; nextDirY = 0;
+  score = 0;
+  gameOver = false;
+  paused = false;
+  okHeld = false;
+  tickMs = 180;
+  placeFood();
 
-    // Log via serial
-    Serial.print("Botao: ");
-    Serial.println(name);
+  // Desenhar HUD inicial
+  lcdClearBuffer();
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+  lcdDrawText(0, 2, "SNAKE  Pts:", FONT_5X7);
+  lcdDrawNumber(0, 70, score, FONT_5X7);
+  lcdFlush();
+}
 
-    lastShown = k;
+static void drawCell(uint8_t gx, uint8_t gy) {
+  uint8_t x = gx * CELL;
+  uint8_t y = GRID_OFFSET_Y + gy * CELL;
+  // bloco com margem interna de 1 px
+  uint8_t w = (CELL >= 2) ? CELL - 2 : CELL;
+  uint8_t h = (CELL >= 2) ? CELL - 2 : CELL;
+  lcdFillRect(x + 1, y + 1, w, h);
+}
+
+static void renderGame() {
+  lcdClearBuffer();
+  // moldura da área jogável
+  lcdDrawRect(0, GRID_OFFSET_Y, LCD_WIDTH, LCD_HEIGHT - GRID_OFFSET_Y);
+
+  // HUD
+  lcdDrawText(0, 2, "SNAKE  Pts:", FONT_5X7);
+  lcdDrawNumber(0, 70, score, FONT_5X7);
+
+  // comida
+  drawCell(food.x, food.y);
+
+  // cobra
+  for (uint16_t i = 0; i < snakeLen; ++i) {
+    drawCell(snake[i].x, snake[i].y);
   }
 
-  delay(30);
+  if (gameOver) {
+    lcdDrawText(2, 30, "GAME OVER", FONT_5X7);
+    lcdDrawText(4, 10, "OK = Reiniciar", FONT_3X5);
+  } else if (paused) {
+    lcdDrawText(2, 40, "PAUSE", FONT_5X7);
+  }
+
+  lcdFlush();
+}
+
+static void handleInput() {
+  Key k = readKeyDebounced();
+
+  if (gameOver) {
+    if (k == KEY_OK && !okHeld) { snakeReset(); renderGame(); }
+    okHeld = (k == KEY_OK);
+    return;
+  }
+
+  // Pause com OK
+  if (k == KEY_OK && !okHeld) { paused = !paused; }
+  okHeld = (k == KEY_OK);
+
+  if (paused) return;
+
+  // mudar direção (impedir inversão imediata)
+  if (k == KEY_UP && dirY != 1) { nextDirX = 0; nextDirY = -1; }
+  if (k == KEY_DOWN && dirY != -1) { nextDirX = 0; nextDirY = 1; }
+  if (k == KEY_LEFT && dirX != 1) { nextDirX = -1; nextDirY = 0; }
+  if (k == KEY_RIGHT && dirX != -1) { nextDirX = 1; nextDirY = 0; }
+}
+
+static void stepGame() {
+  if (gameOver || paused) return;
+
+  // aplicar direção desejada
+  dirX = nextDirX; dirY = nextDirY;
+
+  // nova cabeça
+  int16_t nx = (int16_t)snake[0].x + dirX;
+  int16_t ny = (int16_t)snake[0].y + dirY;
+
+  // warp nas bordas (atravessa para o lado oposto)
+  if (nx < 0) nx = GRID_COLS - 1;
+  if (nx >= GRID_COLS) nx = 0;
+  if (ny < 0) ny = GRID_ROWS - 1;
+  if (ny >= GRID_ROWS) ny = 0;
+
+  // colisão com o próprio corpo
+  for (uint16_t i = 0; i < snakeLen; ++i) {
+    if (snake[i].x == nx && snake[i].y == ny) { gameOver = true; renderGame(); return; }
+  }
+
+  // deslocar corpo
+  for (int i = (int)snakeLen - 1; i > 0; --i) snake[i] = snake[i - 1];
+  snake[0].x = (uint8_t)nx; snake[0].y = (uint8_t)ny;
+
+  // comer comida
+  if (snake[0].x == food.x && snake[0].y == food.y) {
+    if (snakeLen < SNAKE_MAX) { snake[snakeLen] = snake[snakeLen - 1]; snakeLen++; }
+    score += 1;
+    if (tickMs > 80) tickMs -= 5; // acelera
+    placeFood();
+  }
+
+  renderGame();
+}
+
+void loop() {
+  static bool started = false;
+  if (!started) { snakeReset(); renderGame(); started = true; lastTick = millis(); }
+
+  handleInput();
+
+  unsigned long now = millis();
+  if (now - lastTick >= tickMs) { lastTick = now; stepGame(); }
+
+  delay(10);
 }
 
 // Desenha uma régua horizontal de linhas (para contar a altura visível)
