@@ -620,16 +620,15 @@ void setup() {
   // Demo inicial: informações do sistema
   lcdClearBuffer();
   lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
-  // Desenhar linhas extras para garantir bordas visíveis
-  lcdDrawHLine(0, LCD_WIDTH-1, 0);           // Borda superior
-  lcdDrawHLine(0, LCD_WIDTH-1, LCD_HEIGHT-1); // Borda inferior
-  lcdDrawVLine(0, 0, LCD_HEIGHT-1);          // Borda esquerda
-  lcdDrawVLine(LCD_WIDTH-1, 0, LCD_HEIGHT-1); // Borda direita
   
-  lcdDrawText(1, 10, "ESP32-S3", FONT_5X7);
-  lcdDrawText(2, 10, "LCD Driver", FONT_5X7);
-  lcdDrawText(4, 10, "132x48 pixels", FONT_5X7);
-  lcdDrawText(5, 10, "2 fonts ready", FONT_5X7);
+  // Texto longo dividido em múltiplas linhas
+  lcdDrawText(0, 2, "O aluno deve ler", FONT_5X7);
+  lcdDrawText(1, 2, "as instrucoes da", FONT_5X7);
+  lcdDrawText(2, 2, "atividade e", FONT_5X7);
+  lcdDrawText(3, 2, "assistir ao(s)", FONT_5X7);
+  lcdDrawText(4, 2, "video(s) antes de", FONT_5X7);
+  lcdDrawText(5, 2, "realizar.", FONT_5X7);
+  
   lcdFlush();
   
   delay(2000);
