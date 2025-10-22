@@ -4,12 +4,22 @@
 // - D/C: 0 = command, 1 = data
 // - RST: active low
 // - Data (MOSI) sampled on SCK rising edge, MSB first
-// - Display uses 5x8 font, vertical columns per byte
+// - Display uses 5x7 font, vertical columns per byte
 //
 // Display resolution: 132 columns × 48 rows (6 pages × 8 pixels)
 // Visible area: columns 0-131, rows 0-47
+//
+// Features:
+// - Framebuffer-based rendering (792 bytes RAM)
+// - Graphics primitives: lines, rectangles, circles, filled shapes
+// - Multiple fonts: 3x5 (compact), 5x7 (standard)
+// - Bitmap support with PROGMEM
+// - PWM backlight control (GPIO 15)
+// - Public domain fonts included
 
 #include <Arduino.h>
+#include "font3x5.h"  // Compact 3x5 font for labels/small text
+#include "font5x7.h"  // Standard 5x7 font (public domain)
 
 // ======== Display resolution ========
 #define LCD_WIDTH  132
@@ -120,10 +130,18 @@ static void lcdDrawInterleavedVerticalLines(uint8_t totalCols = LCD_WIDTH, bool 
   }
 }
 
+// Font selector enum (needed for forward declarations)
+enum FontSize {
+  FONT_3X5 = 0,
+  FONT_5X7 = 1
+};
+
 // Forward declarations
-static void lcdDrawNumber(uint8_t page, uint8_t col, int num);
+static void lcdDrawNumber(uint8_t page, uint8_t col, int num, FontSize font = FONT_5X7);
 static void demoTextScrollBitmap();
 static void demoGraphicsPrimitives();
+static void demoFontSelfTest();
+static void demoAllFeatures();
 
 // ======== Framebuffer operations ========
 
@@ -293,7 +311,57 @@ static void lcdDrawCircle(int16_t x0, int16_t y0, uint8_t r) {
   }
 }
 
-// Draw a column ruler: small tick every 2 cols, bigger every 8 cols, labels every 16 cols.
+// Draw triangle (outline)
+static void lcdDrawTriangle(int16_t x0, int16_t y0, int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+  lcdDrawLine(x0, y0, x1, y1);
+  lcdDrawLine(x1, y1, x2, y2);
+  lcdDrawLine(x2, y2, x0, y0);
+}
+
+// Fill triangle (scan-line algorithm)
+static void lcdFillTriangle(int16_t x0, int16_t y0, int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+  // Sort vertices by y coordinate (y0 <= y1 <= y2)
+  if (y0 > y1) { int16_t t; t=y0; y0=y1; y1=t; t=x0; x0=x1; x1=t; }
+  if (y1 > y2) { int16_t t; t=y1; y1=y2; y2=t; t=x1; x1=x2; x2=t; }
+  if (y0 > y1) { int16_t t; t=y0; y0=y1; y1=t; t=x0; x0=x1; x1=t; }
+  
+  if (y0 == y2) { // Degenerate case: all on same line
+    int16_t a = x0, b = x0;
+    if (x1 < a) a = x1; else if (x1 > b) b = x1;
+    if (x2 < a) a = x2; else if (x2 > b) b = x2;
+    lcdDrawHLine(a, b, y0);
+    return;
+  }
+  
+  int32_t dx01 = x1 - x0, dy01 = y1 - y0;
+  int32_t dx02 = x2 - x0, dy02 = y2 - y0;
+  int32_t dx12 = x2 - x1, dy12 = y2 - y1;
+  int32_t sa = 0, sb = 0;
+  
+  int16_t last = (y1 == y2) ? y1 : y1 - 1;
+  
+  for (int16_t y = y0; y <= last; y++) {
+    int16_t a = x0 + sa / dy02;
+    int16_t b = x0 + sb / dy01;
+    sa += dx02;
+    sb += dx01;
+    if (a > b) { int16_t t = a; a = b; b = t; }
+    lcdDrawHLine(a, b, y);
+  }
+  
+  sa = (int32_t)dx12 * (last - y0);
+  sb = (int32_t)dx02 * (y1 - y0);
+  for (int16_t y = last + 1; y <= y2; y++) {
+    int16_t a = x1 + sa / dy12;
+    int16_t b = x0 + sb / dy02;
+    sa += dx12;
+    sb += dx02;
+    if (a > b) { int16_t t = a; a = b; b = t; }
+    lcdDrawHLine(a, b, y);
+  }
+}
+
+// Draw column ruler: small tick every 2 cols, bigger every 8 cols, labels every 16 cols.
 // Marks visible window [0 .. visibleCols-1] with full-height borders.
 static void lcdDrawColumnRuler(uint8_t totalCols = LCD_WIDTH, uint8_t visibleCols = LCD_WIDTH, uint8_t labelStep = 16) {
   // Clear all pages first
@@ -333,68 +401,95 @@ static void lcdDrawColumnRuler(uint8_t totalCols = LCD_WIDTH, uint8_t visibleCol
   }
 }
 
-// ======== Minimal 5x8 font subset (vertical columns, LSB at top) ========
-// Known glyphs from captures: 'A', 'F', '-', ':' and space
-// Added: digits 0-9
-static bool glyph5x8(char c, uint8_t out[5]) {
-  switch (c) {
-    case 'A': { uint8_t g[5] = {0xF8, 0x24, 0x22, 0x24, 0xF8}; memcpy(out, g, 5); return true; }
-    case 'F': { uint8_t g[5] = {0xFE, 0x12, 0x12, 0x12, 0x02}; memcpy(out, g, 5); return true; }
-    case '-': { uint8_t g[5] = {0x80, 0x80, 0x80, 0x80, 0x80}; memcpy(out, g, 5); return true; }
-    case ':': { uint8_t g[5] = {0x08, 0x08, 0x08, 0x08, 0x08}; memcpy(out, g, 5); return true; }
-    case ' ': { uint8_t g[5] = {0x00, 0x00, 0x00, 0x00, 0x00}; memcpy(out, g, 5); return true; }
-    
-    // Digits 0-9 (5x8 bitmap, vertical columns)
-    case '0': { uint8_t g[5] = {0x7C, 0x82, 0x82, 0x82, 0x7C}; memcpy(out, g, 5); return true; }
-    case '1': { uint8_t g[5] = {0x00, 0x84, 0xFE, 0x80, 0x00}; memcpy(out, g, 5); return true; }
-    case '2': { uint8_t g[5] = {0x84, 0xC2, 0xA2, 0x92, 0x8C}; memcpy(out, g, 5); return true; }
-    case '3': { uint8_t g[5] = {0x42, 0x82, 0x92, 0x92, 0x6C}; memcpy(out, g, 5); return true; }
-    case '4': { uint8_t g[5] = {0x30, 0x28, 0x24, 0xFE, 0x20}; memcpy(out, g, 5); return true; }
-    case '5': { uint8_t g[5] = {0x4E, 0x8A, 0x8A, 0x8A, 0x72}; memcpy(out, g, 5); return true; }
-    case '6': { uint8_t g[5] = {0x7C, 0x92, 0x92, 0x92, 0x60}; memcpy(out, g, 5); return true; }
-    case '7': { uint8_t g[5] = {0x02, 0xE2, 0x12, 0x0A, 0x06}; memcpy(out, g, 5); return true; }
-    case '8': { uint8_t g[5] = {0x6C, 0x92, 0x92, 0x92, 0x6C}; memcpy(out, g, 5); return true; }
-    case '9': { uint8_t g[5] = {0x0C, 0x92, 0x92, 0x92, 0x7C}; memcpy(out, g, 5); return true; }
-    
-    default: {
-      // Placeholder: open box
-      uint8_t g[5] = {0x7E, 0x42, 0x5A, 0x42, 0x7E};
-      memcpy(out, g, 5);
+// ======== Font rendering functions ========
+
+// Get glyph data for selected font
+static bool getGlyph(char c, uint8_t* out, FontSize font, uint8_t* width) {
+  if (font == FONT_3X5) {
+    *width = 3;
+    if (c >= 32 && c <= 126) {
+      uint16_t idx = (uint16_t)(c - 32) * 3;
+      for (uint8_t i = 0; i < 3; ++i) {
+        #if defined(ARDUINO_ARCH_AVR)
+        out[i] = pgm_read_byte(&font3x5[idx + i]);
+        #else
+        out[i] = font3x5[idx + i];
+        #endif
+      }
       return true;
     }
+    // Fallback box for 3x5
+    out[0] = 0x1F; out[1] = 0x11; out[2] = 0x1F;
+    return true;
+  }
+  else { // FONT_5X7
+    *width = 5;
+    // Font5x7 has ALL 256 characters (0-255), so use ASCII value directly
+    uint16_t idx = (uint16_t)((uint8_t)c) * 5;
+    for (uint8_t i = 0; i < 5; ++i) {
+      #if defined(ARDUINO_ARCH_AVR)
+      out[i] = pgm_read_byte(&font5x7[idx + i]);
+      #else
+      out[i] = font5x7[idx + i];
+      #endif
+    }
+    return true;
   }
 }
 
-static void lcdDrawChar(uint8_t page, uint8_t col, char c, uint8_t spacing = 1) {
+// Draw single character with specified font
+static void lcdDrawChar(uint8_t page, uint8_t col, char c, FontSize font = FONT_5X7, uint8_t spacing = 1) {
   uint8_t g[5];
-  glyph5x8(c, g);
-  if (col + 5 > LCD_WIDTH) return; // Evitar overflow
+  uint8_t w;
+  getGlyph(c, g, font, &w);
+  if (col + w > LCD_WIDTH) return;
   
-  // Desenhar no framebuffer
-  for (uint8_t i = 0; i < 5; ++i) {
+  for (uint8_t i = 0; i < w; ++i) {
     if (col + i < LCD_WIDTH) {
       lcdBuffer[page][col + i] = g[i];
     }
   }
   
-  // Espaçamento (colunas em branco)
-  for (uint8_t i = 0; i < spacing && (col + 5 + i) < LCD_WIDTH; ++i) {
-    lcdBuffer[page][col + 5 + i] = 0x00;
+  // Spacing (blank columns)
+  for (uint8_t i = 0; i < spacing && (col + w + i) < LCD_WIDTH; ++i) {
+    lcdBuffer[page][col + w + i] = 0x00;
   }
 }
 
-static void lcdDrawText(uint8_t page, uint8_t col, const char* text) {
+// Draw text string with specified font
+static void lcdDrawText(uint8_t page, uint8_t col, const char* text, FontSize font = FONT_5X7) {
   uint8_t x = col;
+  uint8_t charWidth = (font == FONT_3X5) ? 4 : 6; // width + 1 spacing
   for (const char* p = text; *p && x < LCD_WIDTH; ++p) {
-    lcdDrawChar(page, x, *p);
-    x += 6; // 5 columns + 1 spacing
+    lcdDrawChar(page, x, *p, font);
+    x += charWidth;
   }
 }
 
-static void lcdDrawNumber(uint8_t page, uint8_t col, int num) {
+static void lcdDrawNumber(uint8_t page, uint8_t col, int num, FontSize font) {
   char buf[12];
   snprintf(buf, sizeof(buf), "%d", num);
-  lcdDrawText(page, col, buf);
+  lcdDrawText(page, col, buf, font);
+}
+
+// ======== Font self-test demo ========
+static void demoFontSelfTest() {
+  lcdClearBuffer();
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+
+  // Linha 1: Dígitos
+  lcdDrawText(1, 2, "0123456789");
+
+  // Linha 2: Maiúsculas
+  lcdDrawText(2, 2, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+
+  // Linha 3: Minúsculas
+  lcdDrawText(3, 2, "abcdefghijklmnopqrstuvwxyz");
+
+  // Linha 4: Pontuacao e símbolos comuns
+  lcdDrawText(4, 2, " !\"#$%&'()*+,-./:;<=>?@[\\]^_{|}~");
+
+  lcdFlush();
 }
 
 // ======== Initialization sequence ========
@@ -515,24 +610,38 @@ static void lcdInit() {
 }
 
 void setup() {
-  // Optional: slow down if needed
-  // setCpuFrequencyMhz(80);
+  Serial.begin(115200);
+  Serial.println("\nESP32-S3 LCD 132x48 Driver");
+  Serial.println("Features: Framebuffer, Graphics, Multiple Fonts, PWM Backlight");
+  
   lcdInit();
-
-  // Teste simples: backlight constante e borda
   lcdBacklightOn();
   
+  // Demo inicial: informações do sistema
   lcdClearBuffer();
   lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
-  lcdDrawText(1, 20, "ESP32-S3");
-  lcdDrawText(3, 30, "132x48");
+  // Desenhar linhas extras para garantir bordas visíveis
+  lcdDrawHLine(0, LCD_WIDTH-1, 0);           // Borda superior
+  lcdDrawHLine(0, LCD_WIDTH-1, LCD_HEIGHT-1); // Borda inferior
+  lcdDrawVLine(0, 0, LCD_HEIGHT-1);          // Borda esquerda
+  lcdDrawVLine(LCD_WIDTH-1, 0, LCD_HEIGHT-1); // Borda direita
+  
+  lcdDrawText(1, 10, "ESP32-S3", FONT_5X7);
+  lcdDrawText(2, 10, "LCD Driver", FONT_5X7);
+  lcdDrawText(4, 10, "132x48 pixels", FONT_5X7);
+  lcdDrawText(5, 10, "2 fonts ready", FONT_5X7);
   lcdFlush();
   
-  // Para testar a demo completa, descomente:
-  // demoTextScrollBitmap();
+  delay(2000);
   
-  // Para testar primitivas gráficas, descomente:
+  // Autoteste de fontes
+  demoFontSelfTest();
+  delay(3000);
+  
+  // Demo completa (descomente para ativar)
+  // demoTextScrollBitmap();
   // demoGraphicsPrimitives();
+  // demoAllFeatures();
 }
 
 // ======== Demo functions ========
@@ -569,7 +678,7 @@ static void demoGraphicsPrimitives() {
   }
   
   lcdDrawText(0, 40, "LCD");
-  lcdDrawNumber(5, 100, 132);
+  lcdDrawNumber(5, 100, 132, FONT_5X7);
   
   lcdFlush();
 }
@@ -637,7 +746,7 @@ static void demoTextScrollBitmap() {
     int16_t textX = scroll;
     for (const char* p = scrollText; *p; ++p) {
       if (textX >= -6 && textX < LCD_WIDTH) {
-        lcdDrawChar(2, textX, *p, 1);
+        lcdDrawChar(2, textX, *p, FONT_5X7, 1);
       }
       textX += 6;
     }
@@ -678,7 +787,7 @@ static void demoTextScrollBitmap() {
     }
     
     lcdDrawText(2, 20, "GRAPHICS");
-    lcdDrawNumber(3, 45, frame);
+    lcdDrawNumber(3, 45, frame, FONT_5X7);
     
     lcdFlush();
     delay(50);
@@ -754,6 +863,78 @@ static void lcdDrawRowRuler(uint8_t totalCols = LCD_WIDTH, uint8_t visibleRows =
     lcdWriteData(c4);
 
     // Rótulo por página (valor aproximado da primeira linha desta página)
-    lcdDrawNumber(page, 8, page * 8);
+    lcdDrawNumber(page, 8, page * 8, FONT_5X7);
   }
+}
+
+// ======== Demo: All Features ========
+static void demoAllFeatures() {
+  // Test 1: Multiple fonts
+  lcdClearBuffer();
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+  lcdDrawText(0, 2, "Font 5x7:", FONT_5X7);
+  lcdDrawText(1, 2, "ABCDEFG 0123", FONT_5X7);
+  lcdDrawText(3, 2, "Font 3x5:", FONT_3X5);
+  lcdDrawText(4, 2, "ABCDEFGHIJKLM 012345", FONT_3X5);
+  lcdFlush();
+  delay(3000);
+  
+  // Test 2: Shapes
+  lcdClearBuffer();
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+  lcdDrawText(0, 35, "SHAPES", FONT_5X7);
+  
+  // Triangles
+  lcdDrawTriangle(10, 35, 25, 15, 40, 35);
+  lcdFillTriangle(50, 35, 65, 15, 80, 35);
+  
+  // Circles
+  lcdDrawCircle(100, 25, 15);
+  lcdFillRect(95, 20, 10, 10);
+  
+  lcdFlush();
+  delay(3000);
+  
+  // Test 3: Animation - bouncing ball
+  for (int frame = 0; frame < 50; frame++) {
+    lcdClearBuffer();
+    lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+    
+    // Calculate ball position (simple sine wave)
+    int x = 20 + frame * 2;
+    int y = 24 + (int)(12.0 * sin(frame * 0.3));
+    
+    if (x < LCD_WIDTH - 20) {
+      lcdDrawCircle(x, y, 8);
+      lcdFillRect(x-2, y-2, 4, 4);
+    }
+    
+    lcdDrawText(5, 2, "Bouncing!", FONT_3X5);
+    lcdFlush();
+    delay(50);
+  }
+  
+  delay(1000);
+  
+  // Test 4: Backlight fade
+  lcdClearBuffer();
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+  lcdDrawText(2, 10, "BACKLIGHT", FONT_5X7);
+  lcdDrawText(3, 20, "Fading", FONT_5X7);
+  lcdFlush();
+  
+  // Fade out
+  for (int b = 255; b >= 0; b -= 5) {
+    lcdSetBacklight(b);
+    delay(20);
+  }
+  delay(500);
+  
+  // Fade in
+  for (int b = 0; b <= 255; b += 5) {
+    lcdSetBacklight(b);
+    delay(20);
+  }
+  
+  delay(1000);
 }
