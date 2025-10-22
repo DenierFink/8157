@@ -49,6 +49,9 @@ static uint8_t lcdBuffer[LCD_PAGES][LCD_WIDTH];
 #define LCD_PIN_BACKLIGHT 15  // PWM para controle de brilho
 #endif
 
+
+#include "keypad.h"
+
 // PWM config para backlight
 #define LCD_BACKLIGHT_CHANNEL 0
 #define LCD_BACKLIGHT_FREQ    5000  // 5 kHz
@@ -142,6 +145,11 @@ static void demoTextScrollBitmap();
 static void demoGraphicsPrimitives();
 static void demoFontSelfTest();
 static void demoAllFeatures();
+static void demoKeypadTest();
+static void demoPinScanner();
+
+// ======== Keypad API ========
+// Declarations live in include/keypad.h, implementation in src/keypad.cpp
 
 // ======== Framebuffer operations ========
 
@@ -612,35 +620,19 @@ static void lcdInit() {
 void setup() {
   Serial.begin(115200);
   Serial.println("\nESP32-S3 LCD 132x48 Driver");
-  Serial.println("Features: Framebuffer, Graphics, Multiple Fonts, PWM Backlight");
+  Serial.println("Modo: Teclado mostra botao pressionado");
   
   lcdInit();
   lcdBacklightOn();
+  keypadInit();
   
-  // Demo inicial: informações do sistema
+  // Tela inicial simples
   lcdClearBuffer();
   lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
-  
-  // Texto longo dividido em múltiplas linhas
-  lcdDrawText(0, 2, "O aluno deve ler", FONT_5X7);
-  lcdDrawText(1, 2, "as instrucoes da", FONT_5X7);
-  lcdDrawText(2, 2, "atividade e", FONT_5X7);
-  lcdDrawText(3, 2, "assistir ao(s)", FONT_5X7);
-  lcdDrawText(4, 2, "video(s) antes de", FONT_5X7);
-  lcdDrawText(5, 2, "realizar.", FONT_5X7);
-  
+  lcdDrawText(0, 8, "TECLADO", FONT_5X7);
+  lcdDrawText(2, 6, "Pressione um botao", FONT_3X5);
+  lcdDrawText(4, 10, "Aguardando...", FONT_3X5);
   lcdFlush();
-  
-  delay(2000);
-  
-  // Autoteste de fontes
-  demoFontSelfTest();
-  delay(3000);
-  
-  // Demo completa (descomente para ativar)
-  // demoTextScrollBitmap();
-  // demoGraphicsPrimitives();
-  // demoAllFeatures();
 }
 
 // ======== Demo functions ========
@@ -822,7 +814,36 @@ static void demoTextScrollBitmap() {
 }
 
 void loop() {
-  // Nothing here for now
+  static Key lastShown = KEY_NONE;
+  Key k = readKeyDebounced();
+
+  if (k != lastShown) {
+    const char* name = "NENHUM";
+    switch (k) {
+      case KEY_UP: name = "CIMA"; break;
+      case KEY_DOWN: name = "BAIXO"; break;
+      case KEY_LEFT: name = "ESQUERDA"; break;
+      case KEY_RIGHT: name = "DIREITA"; break;
+      case KEY_OK: name = "OK"; break;
+      default: name = "NENHUM"; break;
+    }
+
+    lcdClearBuffer();
+    lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+    lcdDrawText(0, 8, "TECLADO", FONT_5X7);
+    lcdDrawText(2, 10, "Botao:", FONT_5X7);
+    // Mostrar nome do botao em destaque na linha abaixo
+    lcdDrawText(3, 10, name, FONT_5X7);
+    lcdFlush();
+
+    // Log via serial
+    Serial.print("Botao: ");
+    Serial.println(name);
+
+    lastShown = k;
+  }
+
+  delay(30);
 }
 
 // Desenha uma régua horizontal de linhas (para contar a altura visível)
@@ -936,4 +957,75 @@ static void demoAllFeatures() {
   }
   
   delay(1000);
+}
+
+// Demo: Keypad test (shows current pressed key)
+static void demoKeypadTest() {
+  keypadInit();
+  lcdClearBuffer();
+  lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+  lcdDrawText(0, 4, "Keypad Test", FONT_5X7);
+  lcdDrawText(5, 2, "Press UP/DOWN/", FONT_3X5);
+  lcdDrawText(6-1, 2, "LEFT/RIGHT/OK", FONT_3X5); // using page 5 (last row)
+  lcdFlush();
+
+  while (true) {
+    Key k = readKeyDebounced();
+    lcdClearBuffer();
+    lcdDrawRect(0, 0, LCD_WIDTH, LCD_HEIGHT);
+    lcdDrawText(0, 4, "Keypad Test", FONT_5X7);
+    const char* name = "NONE";
+    switch (k) {
+      case KEY_UP: name = "UP"; break;
+      case KEY_DOWN: name = "DOWN"; break;
+      case KEY_LEFT: name = "LEFT"; break;
+      case KEY_RIGHT: name = "RIGHT"; break;
+      case KEY_OK: name = "OK"; break;
+      default: name = "NONE"; break;
+    }
+    lcdDrawText(2, 10, "Pressed:", FONT_5X7);
+    lcdDrawText(3, 10, name, FONT_5X7);
+    lcdFlush();
+    delay(50);
+  }
+}
+
+// Demo: Pin scanner - probes candidate GPIOs using INPUT_PULLUP and reports via Serial + LCD
+static void demoPinScanner() {
+  const int pins[] = {0, 2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33, 34, 35, 36, 37, 38, 39};
+  const int count = sizeof(pins)/sizeof(pins[0]);
+  Serial.println("Starting pin scanner (INPUT_PULLUP probe)...");
+  lcdClearBuffer();
+  lcdDrawRect(0,0,LCD_WIDTH,LCD_HEIGHT);
+  lcdDrawText(0,4,"Pin Scanner", FONT_5X7);
+  lcdFlush();
+
+  for (int i=0;i<count;i++) {
+    int p = pins[i];
+    // skip pins that are known unsafe (flash pins 6-11)
+    if (p >= 6 && p <= 11) {
+      Serial.printf("GPIO %d: skipped (flash)", p);
+      Serial.println();
+      continue;
+    }
+    // Try INPUT_PULLUP probe (non-destructive)
+    pinMode(p, INPUT_PULLUP);
+    delay(5);
+    int v = digitalRead(p);
+    Serial.printf("GPIO %2d -> %d\n", p, v);
+
+    // Show a rolling status on the LCD (two columns per pin)
+    char buf[20];
+    snprintf(buf, sizeof(buf), "GPIO%2d: %d", p, v);
+    uint8_t page = 1 + (i / 3); // a few pins per page
+    uint8_t col = 2 + (i % 3) * 40;
+    if (page >= LCD_PAGES) page = LCD_PAGES-1;
+    lcdDrawText(page, col, buf, FONT_3X5);
+    lcdFlush();
+    delay(100);
+  }
+
+  Serial.println("Pin scan complete.");
+  lcdDrawText(LCD_PAGES-1, 2, "Scan complete", FONT_3X5);
+  lcdFlush();
 }
