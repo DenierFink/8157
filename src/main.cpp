@@ -20,6 +20,7 @@
 #include <Arduino.h>
 #include "font3x5.h"  // Compact 3x5 font for labels/small text
 #include "font5x7.h"  // Standard 5x7 font (public domain)
+#include <algorithm>
 
 // ======== Display resolution ========
 #define LCD_WIDTH  132
@@ -31,23 +32,30 @@ static uint8_t lcdBuffer[LCD_PAGES][LCD_WIDTH];
 
 // ======== Pin configuration (change to match your wiring) ========
 #ifndef LCD_PIN_CS
-#define LCD_PIN_CS   10
+#define LCD_PIN_CS   5    // VSPI SS
 #endif
 #ifndef LCD_PIN_DC
-#define LCD_PIN_DC   11
+#define LCD_PIN_DC   16   // User requested G16 for DC
 #endif
 #ifndef LCD_PIN_RST
-#define LCD_PIN_RST  12
+#define LCD_PIN_RST  4    // suggested reset pin
 #endif
 #ifndef LCD_PIN_SCK
-#define LCD_PIN_SCK  13
+#define LCD_PIN_SCK  18   // VSPI SCK
 #endif
 #ifndef LCD_PIN_MOSI
-#define LCD_PIN_MOSI 14
+#define LCD_PIN_MOSI 23   // VSPI MOSI
 #endif
 #ifndef LCD_PIN_BACKLIGHT
 #define LCD_PIN_BACKLIGHT 15  // PWM para controle de brilho
 #endif
+
+// Runtime pin mapping (initialized from the compile-time defaults above)
+static uint8_t lcd_pin_cs    = LCD_PIN_CS;
+static uint8_t lcd_pin_dc    = LCD_PIN_DC;
+static uint8_t lcd_pin_rst   = LCD_PIN_RST;
+static uint8_t lcd_pin_sck   = LCD_PIN_SCK;
+static uint8_t lcd_pin_mosi  = LCD_PIN_MOSI;
 
 
 #include "keypad.h"
@@ -64,11 +72,11 @@ static inline void tickDelay() {
 }
 
 // ======== Low-level GPIO helpers ========
-static inline void lcdCS(bool level)   { digitalWrite(LCD_PIN_CS,   level); }
-static inline void lcdDC(bool level)   { digitalWrite(LCD_PIN_DC,   level); }
-static inline void lcdRST(bool level)  { digitalWrite(LCD_PIN_RST,  level); }
-static inline void lcdSCK(bool level)  { digitalWrite(LCD_PIN_SCK,  level); }
-static inline void lcdMOSI(bool level) { digitalWrite(LCD_PIN_MOSI, level); }
+static inline void lcdCS(bool level)   { digitalWrite(lcd_pin_cs,   level); }
+static inline void lcdDC(bool level)   { digitalWrite(lcd_pin_dc,   level); }
+static inline void lcdRST(bool level)  { digitalWrite(lcd_pin_rst,  level); }
+static inline void lcdSCK(bool level)  { digitalWrite(lcd_pin_sck,  level); }
+static inline void lcdMOSI(bool level) { digitalWrite(lcd_pin_mosi, level); }
 
 // Write one byte MSB first on falling edge (clock idles HIGH)
 static void lcdWriteByte(uint8_t b) {
@@ -147,6 +155,11 @@ static void demoFontSelfTest();
 static void demoAllFeatures();
 static void demoKeypadTest();
 static void demoPinScanner();
+// Forward declarations for pin-mapping test
+static void setPinMapping(uint8_t cs, uint8_t dc, uint8_t rst, uint8_t sck, uint8_t mosi);
+static void runPinPermutationTest();
+// Forward declaration for GPIO validator used in lcdInit
+static bool gpioIsValid(int pin);
 
 // ======== Keypad API ========
 // Declarations live in include/keypad.h, implementation in src/keypad.cpp
@@ -551,12 +564,12 @@ static void lcdReset() {
 
 static void lcdInit() {
   // Configure pins
-  pinMode(LCD_PIN_CS, OUTPUT);
-  pinMode(LCD_PIN_DC, OUTPUT);
-  pinMode(LCD_PIN_RST, OUTPUT);
-  pinMode(LCD_PIN_SCK, OUTPUT);
-  pinMode(LCD_PIN_MOSI, OUTPUT);
-  pinMode(LCD_PIN_BACKLIGHT, OUTPUT);
+  if (gpioIsValid(lcd_pin_cs)) pinMode(lcd_pin_cs, OUTPUT); else Serial.printf("lcdInit: invalid CS pin %d\n", lcd_pin_cs);
+  if (gpioIsValid(lcd_pin_dc)) pinMode(lcd_pin_dc, OUTPUT); else Serial.printf("lcdInit: invalid DC pin %d\n", lcd_pin_dc);
+  if (gpioIsValid(lcd_pin_rst)) pinMode(lcd_pin_rst, OUTPUT); else Serial.printf("lcdInit: invalid RST pin %d\n", lcd_pin_rst);
+  if (gpioIsValid(lcd_pin_sck)) pinMode(lcd_pin_sck, OUTPUT); else Serial.printf("lcdInit: invalid SCK pin %d\n", lcd_pin_sck);
+  if (gpioIsValid(lcd_pin_mosi)) pinMode(lcd_pin_mosi, OUTPUT); else Serial.printf("lcdInit: invalid MOSI pin %d\n", lcd_pin_mosi);
+  if (gpioIsValid(LCD_PIN_BACKLIGHT)) pinMode(LCD_PIN_BACKLIGHT, OUTPUT); else Serial.printf("lcdInit: invalid BACKLIGHT pin %d\n", LCD_PIN_BACKLIGHT);
 
   // Configure PWM for backlight
   ledcSetup(LCD_BACKLIGHT_CHANNEL, LCD_BACKLIGHT_FREQ, LCD_BACKLIGHT_RESOLUTION);
@@ -565,11 +578,11 @@ static void lcdInit() {
 
   // Idle levels - confirmed from scope capture
   // CS HIGH, RST HIGH, D/C LOW, SCK HIGH, MOSI HIGH
-  lcdCS(HIGH);
-  lcdDC(LOW);
-  lcdRST(HIGH);
-  lcdSCK(HIGH);   // Clock idles HIGH
-  lcdMOSI(HIGH);  // Data idles HIGH
+  if (gpioIsValid(lcd_pin_cs)) lcdCS(HIGH); else Serial.printf("lcdInit: skip lcdCS(%d)\n", lcd_pin_cs);
+  if (gpioIsValid(lcd_pin_dc)) lcdDC(LOW); else Serial.printf("lcdInit: skip lcdDC(%d)\n", lcd_pin_dc);
+  if (gpioIsValid(lcd_pin_rst)) lcdRST(HIGH); else Serial.printf("lcdInit: skip lcdRST(%d)\n", lcd_pin_rst);
+  if (gpioIsValid(lcd_pin_sck)) lcdSCK(HIGH); else Serial.printf("lcdInit: skip lcdSCK(%d)\n", lcd_pin_sck);   // Clock idles HIGH
+  if (gpioIsValid(lcd_pin_mosi)) lcdMOSI(HIGH); else Serial.printf("lcdInit: skip lcdMOSI(%d)\n", lcd_pin_mosi);  // Data idles HIGH
 
   // Reset pulse (active LOW)
   lcdRST(LOW);
@@ -622,6 +635,8 @@ void setup() {
   Serial.println("\nESP32-S3 LCD 132x48 Driver");
   Serial.println("Modo: Jogo da Cobrinha");
   
+  // Use VSPI mapping with DC on GPIO16 as requested
+  setPinMapping(LCD_PIN_CS, LCD_PIN_DC, LCD_PIN_RST, LCD_PIN_SCK, LCD_PIN_MOSI);
   lcdInit();
   lcdBacklightOn();
   keypadInit();
@@ -1166,4 +1181,58 @@ static void demoPinScanner() {
   Serial.println("Pin scan complete.");
   lcdDrawText(LCD_PAGES-1, 2, "Scan complete", FONT_3X5);
   lcdFlush();
+}
+
+// Set runtime mapping for the 5 primary LCD signals
+static void setPinMapping(uint8_t cs, uint8_t dc, uint8_t rst, uint8_t sck, uint8_t mosi) {
+  lcd_pin_cs = cs;
+  lcd_pin_dc = dc;
+  lcd_pin_rst = rst;
+  lcd_pin_sck = sck;
+  lcd_pin_mosi = mosi;
+  Serial.printf("setPinMapping: CS=%d DC=%d RST=%d SCK=%d MOSI=%d\n", lcd_pin_cs, lcd_pin_dc, lcd_pin_rst, lcd_pin_sck, lcd_pin_mosi);
+}
+
+// Validate a GPIO number for basic sanity (avoid flash pins and out-of-range)
+static bool gpioIsValid(int pin) {
+  if (pin < 0 || pin > 39) return false;
+  // Avoid QSPI flash pins (typically 6..11)
+  if (pin >= 6 && pin <= 11) return false;
+  return true;
+}
+
+// Iterate all permutations of the candidate pins and display a test message.
+// Candidate pins are the ones listed in the original #defines (10..14).
+static void runPinPermutationTest() {
+  uint8_t pins[5] = { LCD_PIN_CS, LCD_PIN_DC, LCD_PIN_RST, LCD_PIN_SCK, LCD_PIN_MOSI };
+  // Ensure sorted order for next_permutation
+  std::sort(pins, pins + 5);
+  int testNum = 0;
+
+  Serial.println("Starting pin permutation test (watch the display)");
+  do {
+    testNum++;
+    setPinMapping(pins[0], pins[1], pins[2], pins[3], pins[4]);
+    Serial.printf("Test %03d: CS=%d DC=%d RST=%d SCK=%d MOSI=%d\n", testNum, pins[0], pins[1], pins[2], pins[3], pins[4]);
+
+    // Initialize display with this mapping and show message
+    lcdInit();
+    lcdBacklightOn();
+    lcdClearBuffer();
+    char buf[40];
+    snprintf(buf, sizeof(buf), "TEST %03d", testNum);
+    lcdDrawText(2, 30, buf, FONT_5X7);
+    snprintf(buf, sizeof(buf), "C%d D%d R%d S%d M%d", pins[0], pins[1], pins[2], pins[3], pins[4]);
+    lcdDrawText(3, 2, buf, FONT_3X5);
+    lcdFlush();
+
+    // Wait so user can visually check. Short off/on blink to separate tests.
+    delay(1200);
+    lcdBacklightOff();
+    delay(200);
+    lcdBacklightOn();
+    delay(200);
+  } while (std::next_permutation(pins, pins + 5));
+
+  Serial.println("Pin permutation test complete.");
 }

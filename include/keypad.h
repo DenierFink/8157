@@ -6,19 +6,19 @@
 #define KEYPAD_PIN_COMMON -1 // common wire: set to -1 when common is tied to board GND (not driven by software)
 #endif
 #ifndef KEYPAD_PIN_UP
-#define KEYPAD_PIN_UP 4  // safe GPIO (avoid 26..32 which go to flash/PSRAM)
+#define KEYPAD_PIN_UP 34  // moved to input-only group to avoid conflicts
 #endif
 #ifndef KEYPAD_PIN_DOWN
-#define KEYPAD_PIN_DOWN 5
+#define KEYPAD_PIN_DOWN 35
 #endif
 #ifndef KEYPAD_PIN_LEFT
-#define KEYPAD_PIN_LEFT 16
+#define KEYPAD_PIN_LEFT 36
 #endif
 #ifndef KEYPAD_PIN_RIGHT
-#define KEYPAD_PIN_RIGHT 17
+#define KEYPAD_PIN_RIGHT 37
 #endif
 #ifndef KEYPAD_PIN_OK
-#define KEYPAD_PIN_OK 18
+#define KEYPAD_PIN_OK 38
 #endif
 
 // Debounce settings (ms)
